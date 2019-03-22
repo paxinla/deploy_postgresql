@@ -1,0 +1,496 @@
+#!/usr/bin/env bash
+# 1. PATH should be in the last line in file ../conf/etc_profile
+
+
+ACTOPT="$( echo ${1:-'usage'} | tr 'A-Z' 'a-z')"
+
+
+WRKROOT="$PWD"
+CONFDIR="${WRKROOT}/conf"
+PKGDIR="${WRKROOT}/modules"
+LOGFILE='/dev/null'
+
+. "${CONFDIR}/env.sh"
+
+
+ilogger (){
+    if [ $# -eq 2 ];
+    then
+        local msg_lvl="$(echo $1 | tr 'A-Z' 'a-z')"
+        local msg_str="$2"
+    else
+        local msg_lvl="info"
+        local msg_str="$1"
+    fi
+
+    case "${msg_lvl}" in
+        "suc" ) echo -e [$(date +"%F %X")]"\033[32m ✓ ${msg_str} \033[0m" | tee -a "${LOGFILE}" 
+                ;;
+        "err" ) echo -e [$(date +"%F %X")]"\033[31m ✗ ${msg_str} \033[0m" | tee -a "${LOGFILE}" 
+                ;;
+        "warn" ) echo -e [$(date +"%F %X")]"\033[33m ⚠ ${msg_str} \033[0m" | tee -a "${LOGFILE}" 
+                 ;;
+        * ) echo [$(date +"%F %X")]" ${msg_str}" | tee -a "${LOGFILE}" 
+            ;;
+    esac
+}
+
+
+show_usage(){
+    echo "+===============================================================+"
+    echo "| ./install [opts]                                              |"
+    echo "|    opts:                                                      |"
+    echo "|       usage        : show this information.                   |"
+    echo "|       depends      : install system packages.                 |"
+    echo "|       setupos      : setup system parameters.                 |"
+    echo "|       inspy        : install Python environment via pyenv.    |"
+    echo "|       pgserver     : compile and install PostgreSQL server.   |"
+    echo "|       pgclient     : compile and install PostgreSQL client.   |"
+    echo "|       inspgbouncer : compile and install PgBouncer software.  |"
+    echo "|       insrepmgr    : compile and install repmgr software.     |"
+    echo "+===============================================================+"
+    exit 0
+}
+
+
+untar(){
+    local only_zip_name="$1"
+    local zip_suffiex=$(echo "${only_zip_name##*.}" | tr 'A-Z' 'a-z')
+
+    case "${zip_suffiex}" in
+        "gz") tar -zxf "${only_zip_name}"
+              test $? -eq 0 || { ilogger 'err' "ERROR occur while decompressing ${only_zip_name}" ; exit 1; }
+              ;;
+        "xz") tar -Jxf "${only_zip_name}"
+              test $? -eq 0 || { ilogger 'err' "ERROR occur while decompressing ${only_zip_name}" ; exit 1; }
+              ;;
+        "bz2") tar -jxf "${only_zip_name}"
+               test $? -eq 0 || { ilogger 'err' "ERROR occur while decompressing ${only_zip_name}" ; exit 1; }
+              ;;
+        "*") ilogger "err" "Unrecognized compress file: ${only_zip_name} !"
+             exit 1
+             ;;
+    esac
+}
+
+
+setup_system(){
+    # Environment variables
+    local exp_etc_profile="${CONFDIR}/etc_profile"
+    test -f "${CONFDIR}/etc_profile" || { ilogger "err" "Custome environment file ${CONFDIR}/etc_profile not found !"; exit 1; }
+    while read var_item
+    do
+        var_item_head=$(echo ${var_item} | awk -F'=' '{print $1}')
+        local chk_env_var=`grep -E "${var_item_head}" /etc/profile | wc -l`
+        if [ ${chk_env_var} -gt 0 ];
+        then
+            ilogger "Update environment variable $(echo ${var_item_head} | awk '{print $2}') ."
+            sudo sed -i.bak -r "s#^${var_item_head}\=.*#${var_item}#" /etc/profile
+        else
+            ilogger "Add environment variable $(echo ${var_item_head} | awk '{print $2}') ."
+            echo "${var_item}" | sudo tee -a /etc/profile
+        fi
+    done<${exp_etc_profile}
+
+    # Setup HugePage
+    if [ "$(echo ${FLAG_USE_HUGEPAGE} | tr 'a-z' 'A-Z')" = 'N' ];
+    then
+        ilogger "Close THP."
+        echo 'never' | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
+        echo 'never' | sudo tee /sys/kernel/mm/transparent_hugepage/defrag
+        if [ -f '/lib/systemd/system/rc-local.service' -a ! -f '/etc/systemd/system/rc-local.service' ];
+        then
+            sudo ln -fs '/lib/systemd/system/rc-local.service' '/etc/systemd/system/rc-local.service'
+        fi
+        test -f "${CONFDIR}/rc.local" && cat "${CONFDIR}/rc.local" | sudo tee /etc/rc.local
+    fi
+
+
+    ilogger "Edit /etc/security/limits.conf."
+    test -f "${CONFDIR}/limits.conf" || { ilogger "err" "Customize limit.conf file ${CONFDIR}/limits.conf not found !"; exit 1; }
+    if [ -f '/etc/security/limits.conf' -a ! -f '/etc/security/limits.conf.bak' ];
+    then
+        ilogger "Backup old /etc/security/limits.conf ."
+        sudo cp '/etc/security/limits.conf' '/etc/security/limits.conf.bak'
+    fi
+    cat "${CONFDIR}/limits.conf" | sudo tee -a /etc/security/limits.conf
+    sudo sysctl -w fs.file-max=${V_FILE_MAX}
+    sudo sysctl -w kernel.pid_max=${V_PID_MAX}
+
+
+    ilogger "Edit /etc/sysctl.conf"
+    test -f "${CONFDIR}/sysctl.conf" || { ilogger "err" "Customize sysctl.conf file ${CONFDIR}/sysctl.conf not found !"; exit 1; }
+    if [ -f '/etc/sysctl.conf' -a ! -f '/etc/sysctl.conf.bak' ];
+    then
+        ilogger "Backup old /etc/sysctl.conf ."
+        sudo cp '/etc/sysctl.conf' '/etc/sysctl.conf.bak'
+    fi
+    cat "${CONFDIR}/sysctl.conf" | sudo tee -a /etc/sysctl.conf
+    sudo sysctl -p
+
+    ilogger 'suc' "Finish task of setup system."
+}
+
+
+install_sys_packages(){ 
+    local sys_pkgs_list="${CONFDIR}/${C_APT_LIST}"
+    test -f "${sys_pkgs_list}" || { ilogger "err" "System package list ${sys_pkgs_list} not found !"; exit 1; }
+
+    sudo echo "OK" >/dev/null || { >&2 ilogger "err" "You must have SUDO privilege!"; exit 1; }
+    ilogger "Refresh system package information."
+    sudo apt-get update
+    test $? -eq 0 || { ilogger "err" "ERROR occur while update system package information!"; exit 1; }
+
+    while read pkg_name
+    do
+        ilogger "Install system package:  ${pkg_name} ."
+        sudo apt-get install -y "${pgk_name}"
+        test $? -eq 0 || { ilogger "err" "ERROR occur while installing package: ${pgk_name} !!!"; sleep 5; }
+    done<${sys_pkgs_list}
+
+    ilogger 'suc' "Finish task of installing system packages."
+}
+
+
+install_python(){
+    local py_pkgs_list="${CONFDIR}/python_pkg.map"
+    test -f "${py_pkgs_list}" || { ilogger "err" "Python package list ${py_pkgs_list} not found !"; exit 1; }
+
+    local version_py2="${PY2_VERSION}"
+    local version_py3="${PY3_VERSION}"
+
+    # Install pyenv
+    if [ ! -d "${PYENV_ROOT}" ];
+    then
+        pushd "${PKGDIR}"
+        local pyenv_zip=$(awk -F':' '{if($1=="pyenv"){print $2} }' "${py_pkgs_list}")
+        test -f "${pyenv_zip}" || { ilogger "err" "pyenv package ${PKGDIR}/${pyenv_zip} not found !"; exit 1; }
+        ilogger "Install pyenv ."
+        untar "${pyenv_zip}" || { ilogger "err" "Cannot decompress ${PKGDIR}/${pyenv_zip} !"; exit 1; }
+        sudo cp "pyenv" "${PYENV_ROOT}"
+
+        /bin/bash "${PYENV_ROOT}/completions/pyenv.bash"
+        test -d "${PYENV_ROOT}/cache" || mkdir -p "${PYENV_ROOT}/cache"
+
+        ilogger "Install python2: version = ${version_py2} ."
+        test -f "${PKGDIR}/Python-${version_py2}.tar.xz" || { ilogger "err" "python2 package ${PKGDIR}/Python-${version_py2}.tar.xz not found !"; exit 1; }
+        sudo cp "${PKGDIR}/Python-${version_py2}.tar.xz" "${PYENV_ROOT}/cache/"
+        env PYTHON_CONFIGURE_OPTS="--enable-shared --enable-unicode=ucs4" "${PYENV_ROOT}/bin/pyenv" install "${version_py2}"
+
+        ilogger "Install python3: version = ${version_py3} ."
+        test -f "${PKGDIR}/Python-${version_py3}.tar.xz" || { ilogger "err" "python3 package ${PKGDIR}/Python-${version_py3}.tar.xz not found !"; exit 1; }
+        sudo cp "${PKGDIR}/Python-${version_py3}.tar.xz" "${PYENV_ROOT}/cache/"
+        env PYTHON_CONFIGURE_OPTS="--enable-shared" "${PYENV_ROOT}/bin/pyenv" install "${version_py3}"
+        "${PYENV_ROOT}/bin/pyenv" rehash
+        "${PYENV_ROOT}/bin/pyenv" global "${version_py3}"
+        "${PYENV_ROOT}/bin/pyenv" shell "${version_py3}" "${version_py2}"
+        popd
+    fi
+
+    # Install setuptools, virtualenv
+    local pysetuptools=$(awk -F':' '{if($1=="setuptools"){print $2} }' "${py_pkgs_list}")
+    test -f "${PKGDIR}/${pysetuptools}" || { ilogger "err" "setuptools package ${PKGDIR}/${pysetuptools} not found !"; exit 1; }
+    ilogger "Install setuptools."
+    "${PYENV_ROOT}/shims/pip" install "${PKGDIR}/${pysetuptools}"
+
+    local pyvenv=$(awk -F':' '{if($1=="virtualenv"){print $2} }' "${py_pkgs_list}")
+    test -f "${PKGDIR}/${pyvenv}" || { ilogger "err" "virtualenv package ${PKGDIR}/${pyvenv} not found !"; exit 1; }
+    ilogger "Install virtualenv."
+    "${PYENV_ROOT}/shims/pip" install "${PKGDIR}/${pyvenv}"
+
+    ilogger 'suc' "Finish task of installing python runtime."
+}
+
+
+install_postgresql_server(){
+    ilogger "Deploy PostgreSQL server , version = ${PGVERSION} ."
+    local pgzip="${PKGDIR}/postgresql-${PGVERSION}.tar.bz2"
+    test -f "${pgzip}" || { ilogger "err" "Expected source file ${pgzip} not found !"; exit 1; }
+
+    if [ ! -d "${PGHOME}" ];
+    then
+        pushd "${PKGDIR}"
+        test -d "postgresql-${PGVERSION}" && rm -rf "postgresql-${PGVERSION}"
+        untar "${pgzip}"
+        test -d "postgresql-${PGVERSION}" || { ilogger "err" "FAIL to decompress ${pgzip} !"; exit 1; }
+
+        ilogger "Compile PostgreSQL-${PGVERSION}"
+        cd "postgresql-${PGVERSION}"
+        local core_num=$(grep -c processor /proc/cpuinfo)
+        CC=$(which clang) CFLAGS="-O2 -fstrict-enums" ./configure --prefix=${PGINSDIR} --with-pgport=${PGPORT} --with-uuid=ossp --with-perl --with-python --with-openssl --with-pam --with-ldap --with-libxml --with-libxslt --enable-thread-safety --with-blocksize=${SIZE_BLOCK} --with-segsize=${SIZE_SEG} --with-wal-blocksize=${SIZE_WAL_BLOCK}
+        test $? -eq 0 || { ilogger "err" "FAIL to compile PostgreSQL-${PGVERSION} !"; exit 1; }
+
+        MAKELEVEL=0 make world -j ${core_num}
+        test $? -eq 0 || { ilogger "err" "FAIL to make PostgreSQL-${PGVERSION} !"; exit 1; }
+
+        MAKELEVEL=0 sudo make install-world -j ${core_num}
+        test $? -eq 0 || { ilogger "err" "FAIL to make install PostgreSQL-${PGVERSION} !"; exit 1; }
+        popd
+        sudo ln -s "${PGINSDIR}" "${PGHOME}"
+        sudo chown -R postgres:postgres "${PGINSDIR}"
+
+        ilogger "Setup shared libraries."
+        echo "${PGHOME}/lib" | sudo tee /etc/ld.so.conf.d/pgsql.conf
+        sudo /sbin/ldconfig "${PGHOME}/lib"
+
+        ilogger "Create neccessary running directories."
+        test -d "${PGDBRUNDIR}" || { sudo mkdir -p "${PGDBRUNDIR}" && sudo chown -R postgres:postgres "${PGDBRUNDIR}" && ilogger 'suc' "Create directory ${PGDBRUNDIR}" ; }
+        test -d "${PGDBLOGDIR}" || { sudo mkdir -p "${PGDBLOGDIR}" && sudo chown -R postgres:postgres "${PGDBLOGDIR}" && ilogger 'suc' "Create directory ${PGDBLOGDIR}" ; }
+        test -d '/var/log/pg_log' || sudo ln -s "${PGDBLOGDIR}" '/var/log/pg_log'
+
+        ilogger "suc" "Success to deploy PostgreSQL software."
+    fi
+
+    # Create user postgres.
+    local chk_pguser=$(getent passwd postgres | awk -F':' '{print $1}')
+    if [ "${chk_pguser}" = '' ];
+    then
+        sudo useradd -s /bin/bash -m postgres
+    fi
+
+    # Create PostgreSQL data directory
+    if [ ! -d "${PGDATA}" ];
+    then
+        sudo mkdir -p "${PGDATA}"
+        sudo chown -R postgres:postgres "${PGDATA}"
+    fi
+
+    # Create tablespace directory
+    test -d "${PGDBDATDIR}" || { sudo mkdir -p "${PGDBDATDIR}" && sudo chown -R postgres:postgres "${PGDBDATDIR}" && sudo ln -s "${PGDBDATDIR}" "${PGDBDATA}" && ilogger "suc" "Create tablespace directory ${PGDATDIR} ." ; }
+
+    # Init database server.
+    test -f "${PGHOME}/bin/initdb" || { ilogger 'err' "Command 'initdb' not found !" ; exit 1; }
+    sudo -u postgres ${PGHOME}/bin/initdb --no-locale --data-checksums -U postgres -E utf8 --wal-segsize=${SIZE_WAL_SEG} -D "${PGDATA}" --pwfile=${CONFDIR}/passfile
+    test $? -eq 0 || { ilogger "err" "FAIL to initial database, check directory ${PGDATA} !"; exit 1; }
+    ilogger 'suc' "Success to initial PostgreSQL server."
+
+    # Put configure files.
+    if [ ! -d "${PGDBCONFDIR}" ];
+    then
+        ilogger "Create configuration directory: ${PGDBCONFDIR} ."
+        sudo mkdir -p "${PGDBCONFDIR}"
+
+        local cus_conf_lst="${CONFDIR}/${C_PGCONF_LIST}"
+        test -f "${cus_conf_lst}" || { ilogger "err" "Configure file list ${cus_conf_lst} not found !"; exit 1; }
+        while read confile ;
+        do
+            test -f "${CONFDIR}/${confile}" || { ilogger "err" "Configure file ${CONFDIR}/${confile} not found !"; exit 1; }
+            ilogger "Copy configure file ${confile} to ${PGDBCONFDIR}/ ."
+            sudo cp "${CONFDIR}/${confile}" "${PGDBCONFDIR}/${confile}"
+            test $? -eq 0 || { ilogger "err" "FAIL to copy file ${CONFDIR}/${confile} !"; }
+            sudo mv "${PGDATA}/${confile}" "${PGDATA}/${confile}.origin"
+            test $? -eq 0 || { ilogger "err" "FAIL to backup file ${PGDATA}/${confile} !"; }
+            sudo ln -s "${PGDBCONFDIR}/${confile}" "${PGDATA}/${confile}"
+        done<${cus_conf_lst}
+    fi
+
+    # Put script files.
+    if [ ! -d "${PGDBSHDIR}" ];
+    then
+        ilogger "Create script directory: ${PGDBSHDIR} ."
+        sudo mkdir -p "${PGDBSHDIR}"
+
+        local cus_sh_lst="${CONFDIR}/${C_PGSH_LIST}"
+        test -f "${cus_sh_lst}" || { ilogger "err" "Script file list ${cus_sh_lst} not found !"; exit 1; }
+        while read shfile ;
+        do
+            test -f "${CONFDIR}/${shfile}" || { ilogger "err" "Script file ${CONFDIR}/${shfile} not found !"; exit 1; }
+            ilogger "Copy script file ${shfile} to ${PGDBSHDIR}/ ."
+            sudo cp "${CONFDIR}/${shfile}" "${PGDBSHDIR}/${shfile}"
+            test $? -eq 0 || { ilogger "err" "FAIL to copy file ${CONFDIR}/${shfile} !"; }
+        done<${cus_sh_lst}
+    fi
+
+    sudo chown -R postgres:postgres "${PGDBCONFROOT}"
+
+    ilogger 'suc' "Finish task of installing PostgreSQL server."
+}
+
+
+install_postgresql_client(){
+    ilogger "Deploy PostgreSQL client , version = ${PGVERSION} ."
+    local pgzip="${PKGDIR}/postgresql-${PGVERSION}.tar.bz2"
+    test -f "${pgzip}" || { ilogger "err" "Expected source file ${pgzip} not found !"; exit 1; }
+
+    if [ ! -d "${PGHOME}" ];
+    then
+        pushd "${PKGDIR}"
+        test -d "postgresql-${PGVERSION}" && rm -rf "postgresql-${PGVERSION}"
+        untar "${pgzip}"
+        test -d "postgresql-${PGVERSION}" || { ilogger "err" "FAIL to decompress ${pgzip} !"; exit 1; }
+
+        ilogger "Compile PostgreSQL-${PGVERSION}"
+        cd "postgresql-${PGVERSION}"
+        local core_num=$(grep -c processor /proc/cpuinfo)
+        ./configure --prefix=${PGINSDIR} --with-uuid=ossp --with-perl --with-python --with-libxml --with-libxslt
+        test $? -eq 0 || { ilogger "err" "FAIL to compile PostgreSQL-${PGVERSION} !"; exit 1; }
+
+        MAKELEVEL=0 make -j ${core_num}
+        test $? -eq 0 || { ilogger "err" "FAIL to make PostgreSQL-${PGVERSION} !"; exit 1; }
+
+        MAKELEVEL=0 sudo make -C src/bin install -j ${core_num}
+        MAKELEVEL=0 sudo make -C src/include install -j ${core_num}
+        MAKELEVEL=0 sudo make -C src/interfaces install -j ${core_num}
+        MAKELEVEL=0 sudo make -C doc install -j ${core_num}
+        test $? -eq 0 || { ilogger "err" "FAIL to make install PostgreSQL-${PGVERSION} !"; exit 1; }
+        popd
+        ilogger 'suc' "Success to install PostgreSQL client."
+    fi
+
+
+    ilogger 'suc' "Finish task of installing PostgreSQL client."
+}
+
+
+install_pgbouncer(){
+    ilogger "Deploy PgBouncer."
+
+    # Install libevent
+    if [ ! -d "${LIBEVNT_HOME}" ];
+    then
+        local libevent_zip="${PKGDIR}/libevent-${LIBEVNT_VERSION}-stable.tar.gz"
+        test -f "${libevent_zip}" || { ilogger 'err' "libevent source file ${libevent_zip} not found !" ; exit 1; }
+        
+        pushd "${PKGDIR}"
+        test -d "libevent-${LIBEVNT_VERSION}-stable" && rm -rf "libevent-${LIBEVNT_VERSION}-stable"
+        untar "${libevent_zip}"
+        test -d "libevent-${LIBEVNT_VERSION}-stable" || { ilogger 'err' "FAIL to decompress file ${libevent_zip} !"; exit 1; }
+
+        ilogger "Install libevent-${LIBEVNT_VERSION}-stable ."
+        cd "libevent-${LIBEVNT_VERSION}-stable"
+        ./configure --prefix="/opt/libevent-${LIBEVNT_VERSION}"
+        test $? -eq 0 || { ilogger 'err' "FAIL to compile libevent-${LIBEVNT_VERSION} !"; exit 1; }
+        MAKELEVEL=0 make
+        test $? -eq 0 || { ilogger 'err' "FAIL to make libevent-${LIBEVNT_VERSION} !"; exit 1; }
+        MAKELEVEL=0 sudo make install
+        test $? -eq 0 || { ilogger 'err' "FAIL to make install libevent-${LIBEVNT_VERSION} !"; exit 1; }
+
+        sudo ln -s "/opt/libevent-${LIBEVNT_VERSION}" "${LIBEVNT_HOME}"
+        cd "${PKGDIR}"
+        test -d "libevent-${LIBEVNT_VERSION}-stable" && rm -rf "libevent-${LIBEVNT_VERSION}-stable"
+        popd
+
+        local libevt=$(find ${LIBEVNT_HOME}/lib -type l -name "libevent-*")
+        test -f "${libevt}" && { sudo ln -s "${libevt}" "/usr/lib/${libevt##*/}" && ilogger 'suc' "Link so file ${libevt} to /usr/lib/${libevt##*/}" ; }
+        ilogger 'suc' "Success to install libevent ."
+    fi
+
+    # Install pgbouncer
+    if [ ! -d "${PBHOME}" ];
+    then
+        local pbzip="${PKGDIR}/pgbouncer-${PBVERSION}.tar.gz"
+        test -f "${pbzip}" || { ilogger 'err' "pgbouncer source file ${pbzip} not found !"; exit 1; }
+        
+        pushd "${PKGDIR}"
+        test -d "pgbouncer-${PBVERSION}" && rm -rf "pgbouncer-${PBVERSION}"
+        untar "${pbzip}"
+        test -d "pgbouncer-${PBVERSION}" || { ilogger 'err' "FAIL to decompress file ${pbzip} !"; exit 1; }
+
+        ilogger "Install PgBouncer-${PBVERSION} ."
+        cd "pgbouncer-${PBVERSION}"
+        . /etc/profile
+        ./configure --prefix="/opt/pgbouncer-${PBVERSION}" --with-libevent="${LIBEVNT_HOME}"
+        test $? -eq 0 || { ilogger 'err' "FAIL to compile pgbouncer-${PBVERSION} !"; exit 1; }
+        MAKELEVEL=0 make
+        test $? -eq 0 || { ilogger 'err' "FAIL to make pgbouncer-${PBVERSION} !"; exit 1; }
+        MAKELEVEL=0 sudo make install
+        test $? -eq 0 || { ilogger 'err' "FAIL to make install pgbouncer-${PBVERSION} !"; exit 1; }
+
+        sudo ln -s "/opt/pgbouncer-${PBVERSION}" "${PBHOME}"
+        cd "${PKGDIR}"
+        test -d "pgbouncer-${PBVERSION}" && rm -rf "pgbouncer-${PBVERSION}"
+        popd
+        ilogger 'suc' "Success to install PgBouncer ."
+    fi
+
+    # Put configure files.
+    test -d "${PGDBCONFDIR}" || { ilogger 'err' "Expected configuration directory ${PGDBCONFDIR} not found!" ; exit 1; }
+    local pgb_confs="${CONFDIR}/${C_PGB_LIST}"
+    test -f "${pgb_confs}" || { ilogger "err" "Expected file ${pgb_confs} not found !"; exit 1; }
+    while read each_pgb_conf ;
+    do
+        test -f "${CONFDIR}/${each_pgb_conf}" || { ilogger "err" "Customized file ${CONFDIR}/${each_pgb_conf} not found !"; exit 1; }
+        ilogger "Copy script file ${each_pgb_conf} to ${PGDBCONFDIR}/ ."
+        sudo cp "${CONFDIR}/${each_pgb_conf}" "${PGDBCONFDIR}/${each_pgb_conf}"
+        test $? -eq 0 || { ilogger "err" "FAIL to copy file ${CONFDIR}/${each_pgb_conf} !"; }
+    done<${pgb_confs}
+
+
+    ilogger 'suc' "Finish task of installing PgBouncer."
+}
+
+
+install_repmgr(){
+    ilogger "Deploy repmgr."
+    command -v "psql" >/dev/null || { >&2 ilogger 'err' "PostgreSQL not installed, which is needed for installing repmgr !" ; exit 1; }
+
+    local chk_repmgr=$(which 'repmgr')
+    if [ "${chk_repmgr}" = '' ];
+    then
+        local rpmzip="${PKGDIR}/repmgr-${REPMGR_VERSION}.tar.gz"
+        test -f "${rpmzip}" || { ilogger 'err' "repmgr source file ${rpmzip} not found !"; exit 1; }
+
+        pushd "${PKGDIR}"
+        untar "${rpmzip}"
+        local rpmdir=$(ls -1d repmgr-* | grep -v "${rpmzip}")
+        test -d "${rpmdir}" || { ilogger 'err' "FAIL to decompress repmgr source file to directory ${rpmdir} !"; exit 1; }
+        cd "${rpmdir}"
+        export PG_CONFIG="${PGHOME}/bin/pg_config"
+        export PGBINDIR="${PGHOME}/bin"
+        export PG_VERSION="${PGVERSION}"
+        ./configure
+        test $? -eq 0 || { ilogger 'err' "FAIL to compile repmgr-${REPMGR_VERSION} !"; exit 1; }
+        MAKELEVEL=0 sudo make USE_PGXS=1 install
+        test $? -eq 0 || { ilogger 'err' "FAIL to make install repmgr-${REPMGR_VERSION} !"; exit 1; }
+        popd
+        ilogger 'suc' "Success to install repmgr ."
+
+        local chk_serv=$(pgrep -f ${PGDATA})
+        if [ "${chk_serv}" = '' ];
+        then
+            ilogger 'warn' "NO running postgresql server found! You may need to create repmgr user and database manually."
+        else
+            sudo -u postgres "${PGHOME}/bin/createuser" -U postgres -h ${PGHOST:-localhost} -p ${PGPORT} -s repmgr
+            test $? -eq 0 && ilogger 'suc' "Create user repmgr successfully."
+
+            sudo -u postgres "${PGHOME}/bin/createdb" -U postgres -h ${PGHOST:-localhost} -p ${PGPORT} repmgr -O repmgr
+            test $? -eq 0 && ilogger 'suc' "Create database repmgr successfully."
+
+            sudo -u postgres "${PGHOME}/bin/psql" -U postgres -h ${PGHOST:-localhost} -p ${PGPORT} -d repmgr -q -A -t -c 'ALTER USER repmgr SET search_path TO repmgr, public;'
+        fi
+    else
+        ilogger 'suc' "repmgr already installed at ${chk_repmgr} ."
+    fi
+
+    # Put configure files.
+    local repmgr_conf='repmgr.conf'
+    test -d "${PGDBCONFDIR}" || { ilogger 'err' "Expected configuration directory ${PGDBCONFDIR} not found!" ; exit 1; }
+    test -f "${CONFDIR}/${repmgr_conf}" || { ilogger 'err' "Customized configuration file ${CONFDIR}/${repmgr_conf} not found!" ; exit 1; }
+    sudo cp "${CONFDIR}/${repmgr_conf}" "${PGDBCONFDIR}/${repmgr_conf}"
+    test $? -eq 0 && ilogger 'suc' "Put configuration file ${CONFDIR}/${repmgr_conf} to ${PGDBCONFDIR}/${repmgr_conf} ."
+
+    ilogger 'suc' "Finish task of installing repmgr."
+}
+
+
+## Process routine
+case "${ACTOPT}" in
+    "usage") show_usage
+             ;;
+    "depends") install_sys_packages
+               ;;
+    "setupos") setup_system
+               ;;
+    "inspy") install_python
+                  ;;
+    "pgserver") install_postgresql_server
+               ;;
+    "pgclient") install_postgresql_client
+                ;;
+    "inspgbouncer") install_pgbouncer
+                    ;;
+    "insrepmgr") install_repmgr
+                 ;;
+    "*") show_usage
+         ;;
+esac
