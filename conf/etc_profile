@@ -6,4 +6,4 @@ export PGLIB="\${PGHOME}/lib"
 export MANPATH="${PGHOME}/share/man":\$MANPATH
 export LD_LIBRARY_PATH="\${PGHOME}/lib":/opt/libevent/lib:/usr/local/lib:/usr/lib:\$LD_LIBRARY_PATH
 export LD_RUN_PATH="\${PGHOME}/lib":/usr/local/lib:/usr/lib:\$LD_RUN_PATH
-export PATH="\${PYENV_ROOT}"/bin:"\${PGHOME}/bin":/opt/pgbouncer/bin:\$PATH
+export PATH="\${PYENV_ROOT}/bin:\${PGHOME}/bin:/opt/pgbouncer/bin:\$PATH"

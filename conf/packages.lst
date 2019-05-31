@@ -1,7 +1,6 @@
 build-essential
 llvm
 clang
-libssl-dev
 libbz2-dev
 libsqlite3-dev
 libreadline-dev
@@ -10,7 +9,6 @@ libxml2-dev
 libxslt1-dev
 openssl
 libssl-dev
-libssl1.0-dev
 libldap2-dev
 libperl-dev
 libcurl4-openssl-dev

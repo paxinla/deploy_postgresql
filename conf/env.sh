@@ -13,7 +13,7 @@ PY2_VERSION='2.7.15'
 ## PostgreSQL
 C_PGCONF_LIST='pg_conf_files.lst'
 C_PGSH_LIST='pg_script_files.lst'
-PGVERSION='11.1'
+PGVERSION='11.3'
 # huge page support, memory less than 64GB close(N)
 FLAG_USE_HUGEPAGE='N'
 SIZE_BLOCK=32

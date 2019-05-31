@@ -113,19 +113,23 @@ setup_system(){
         ilogger "Backup old /etc/security/limits.conf ."
         sudo cp '/etc/security/limits.conf' '/etc/security/limits.conf.bak'
     fi
-    cat "${CONFDIR}/limits.conf" | sudo tee -a /etc/security/limits.conf
+    cat "${CONFDIR}/limits.conf" | sudo tee /etc/security/limits.conf
     sudo sysctl -w fs.file-max=${V_FILE_MAX}
     sudo sysctl -w kernel.pid_max=${V_PID_MAX}
 
 
     ilogger "Edit /etc/sysctl.conf"
     test -f "${CONFDIR}/sysctl.conf" || { ilogger "err" "Customize sysctl.conf file ${CONFDIR}/sysctl.conf not found !"; exit 1; }
-    if [ -f '/etc/sysctl.conf' -a ! -f '/etc/sysctl.conf.bak' ];
+    if [ "$(grep -E '# For PG' /etc/sysctl.conf | wc -l)" = '0' ];
     then
-        ilogger "Backup old /etc/sysctl.conf ."
-        sudo cp '/etc/sysctl.conf' '/etc/sysctl.conf.bak'
+        if [ -f '/etc/sysctl.conf' -a ! -f '/etc/sysctl.conf.bak' ];
+        then
+            ilogger "Backup old /etc/sysctl.conf ."
+            sudo cp '/etc/sysctl.conf' '/etc/sysctl.conf.bak'
+        fi
+
+        cat "${CONFDIR}/sysctl.conf" | sudo tee -a /etc/sysctl.conf
     fi
-    cat "${CONFDIR}/sysctl.conf" | sudo tee -a /etc/sysctl.conf
     sudo sysctl -p
 
     ilogger 'suc' "Finish task of setup system."
@@ -141,11 +145,17 @@ install_sys_packages(){
     sudo apt-get update
     test $? -eq 0 || { ilogger "err" "ERROR occur while update system package information!"; exit 1; }
 
+    local chk_pkg_exists='N'
     while read pkg_name
     do
-        ilogger "Install system package:  ${pkg_name} ."
-        sudo apt-get install -y "${pgk_name}"
-        test $? -eq 0 || { ilogger "err" "ERROR occur while installing package: ${pgk_name} !!!"; sleep 5; }
+        sudo dpkg -s "${pkg_name}" >dev/null 2>&1 && chk_pkg_exists='Y'
+        if [ "${chk_pkg_exists}" = 'N' ];
+        then
+            ilogger "Install system package:  ${pkg_name} ."
+            sudo apt-get install -y "${pkg_name}"
+            test $? -eq 0 || { ilogger "err" "ERROR occur while installing package: ${pkg_name} !!!"; sleep 5; }
+        fi
+        chk_pkg_exists='N'
     done<${sys_pkgs_list}
 
     ilogger 'suc' "Finish task of installing system packages."
@@ -159,45 +169,79 @@ install_python(){
     local version_py2="${PY2_VERSION}"
     local version_py3="${PY3_VERSION}"
 
+    pushd "${PKGDIR}"
+
     # Install pyenv
     if [ ! -d "${PYENV_ROOT}" ];
     then
-        pushd "${PKGDIR}"
         local pyenv_zip=$(awk -F':' '{if($1=="pyenv"){print $2} }' "${py_pkgs_list}")
         test -f "${pyenv_zip}" || { ilogger "err" "pyenv package ${PKGDIR}/${pyenv_zip} not found !"; exit 1; }
         ilogger "Install pyenv ."
         untar "${pyenv_zip}" || { ilogger "err" "Cannot decompress ${PKGDIR}/${pyenv_zip} !"; exit 1; }
-        sudo cp "pyenv" "${PYENV_ROOT}"
+        sudo cp -r "pyenv" "${PYENV_ROOT}"
+        test $? -eq 0 || { ilogger "err" "FAIL to move pyenv to target location !"; exit 1; }
+        sudo chown -R $USER:$USER "${PYENV_ROOT}"
 
+        echo "export PYENV_ROOT=\"${PYENV_ROOT}\"" >> ~/.bashrc
+        echo "export PATH=\"${PYENV_ROOT}/bin\":\$PATH" >> ~/.bashrc
+        echo "eval \"\$(pyenv init -)\"" >> ~/.bashrc
+        . ~/.bashrc
+
+        export PYENV_ROOT="${PYENV_ROOT}"
+        export PATH="${PYENV_ROOT}/bin:$PATH"
+        eval "$(pyenv init -)"
         /bin/bash "${PYENV_ROOT}/completions/pyenv.bash"
-        test -d "${PYENV_ROOT}/cache" || mkdir -p "${PYENV_ROOT}/cache"
+        test -d "${PYENV_ROOT}/cache" || sudo mkdir -p "${PYENV_ROOT}/cache"
+        test $? -eq 0 || { ilogger "err" "FAIL to creat cache directory ${PYENV_ROOT}/cache !"; exit 1; }
 
+        command -v pyenv || { ilogger "err" "FAIL to initialize pyenv command !"; exit 1; }
+    fi
+
+    # Install python2
+    if [ ! -f "${PYENV_ROOT}/shims/python2" ];
+    then
         ilogger "Install python2: version = ${version_py2} ."
+        # py2 need libssl1.0-dev
+        sudo dpkg -s "libssl1.0-dev" >dev/null 2>&1 || sudo apt-get install -y libssl1.0-dev
         test -f "${PKGDIR}/Python-${version_py2}.tar.xz" || { ilogger "err" "python2 package ${PKGDIR}/Python-${version_py2}.tar.xz not found !"; exit 1; }
         sudo cp "${PKGDIR}/Python-${version_py2}.tar.xz" "${PYENV_ROOT}/cache/"
         env PYTHON_CONFIGURE_OPTS="--enable-shared --enable-unicode=ucs4" "${PYENV_ROOT}/bin/pyenv" install "${version_py2}"
+        test $? -eq 0 || { ilogger "err" "FAIL to compile python2: version = ${version_py2} !"; exit 1; }
+    fi
 
+    # Install python3
+    if [ ! -f "${PYENV_ROOT}/shims/python3" ];
+    then
         ilogger "Install python3: version = ${version_py3} ."
         test -f "${PKGDIR}/Python-${version_py3}.tar.xz" || { ilogger "err" "python3 package ${PKGDIR}/Python-${version_py3}.tar.xz not found !"; exit 1; }
         sudo cp "${PKGDIR}/Python-${version_py3}.tar.xz" "${PYENV_ROOT}/cache/"
         env PYTHON_CONFIGURE_OPTS="--enable-shared" "${PYENV_ROOT}/bin/pyenv" install "${version_py3}"
+        test $? -eq 0 || { ilogger "err" "FAIL to compile python3: version = ${version_py3} !"; exit 1; }
+
         "${PYENV_ROOT}/bin/pyenv" rehash
         "${PYENV_ROOT}/bin/pyenv" global "${version_py3}"
         "${PYENV_ROOT}/bin/pyenv" shell "${version_py3}" "${version_py2}"
-        popd
     fi
 
-    # Install setuptools, virtualenv
-    local pysetuptools=$(awk -F':' '{if($1=="setuptools"){print $2} }' "${py_pkgs_list}")
-    test -f "${PKGDIR}/${pysetuptools}" || { ilogger "err" "setuptools package ${PKGDIR}/${pysetuptools} not found !"; exit 1; }
-    ilogger "Install setuptools."
-    "${PYENV_ROOT}/shims/pip" install "${PKGDIR}/${pysetuptools}"
+    # Install setuptools
+    if [ ! -f "${PYENV_ROOT}/shims/easy_install" ];
+    then
+        local pysetuptools=$(awk -F':' '{if($1=="setuptools"){print $2} }' "${py_pkgs_list}")
+        test -f "${PKGDIR}/${pysetuptools}" || { ilogger "err" "setuptools package ${PKGDIR}/${pysetuptools} not found !"; exit 1; }
+        ilogger "Install setuptools."
+        "${PYENV_ROOT}/shims/pip" install "${PKGDIR}/${pysetuptools}"
+    fi
 
-    local pyvenv=$(awk -F':' '{if($1=="virtualenv"){print $2} }' "${py_pkgs_list}")
-    test -f "${PKGDIR}/${pyvenv}" || { ilogger "err" "virtualenv package ${PKGDIR}/${pyvenv} not found !"; exit 1; }
-    ilogger "Install virtualenv."
-    "${PYENV_ROOT}/shims/pip" install "${PKGDIR}/${pyvenv}"
+    # Install virtualenv
+    if [ ! -f "${PYENV_ROOT}/shims/virtualenv" ];
+    then
+        local pyvenv=$(awk -F':' '{if($1=="virtualenv"){print $2} }' "${py_pkgs_list}")
+        test -f "${PKGDIR}/${pyvenv}" || { ilogger "err" "virtualenv package ${PKGDIR}/${pyvenv} not found !"; exit 1; }
+        ilogger "Install virtualenv."
+        "${PYENV_ROOT}/shims/pip" install "${PKGDIR}/${pyvenv}"
+    fi
 
+    popd
     ilogger 'suc' "Finish task of installing python runtime."
 }
 
@@ -334,6 +378,8 @@ install_postgresql_client(){
         MAKELEVEL=0 sudo make -C doc install -j ${core_num}
         test $? -eq 0 || { ilogger "err" "FAIL to make install PostgreSQL-${PGVERSION} !"; exit 1; }
         popd
+
+        sudo ln -s "${PGINSDIR}" "${PGHOME}"
         ilogger 'suc' "Success to install PostgreSQL client."
     fi
 
@@ -356,7 +402,9 @@ install_pgbouncer(){
         untar "${libevent_zip}"
         test -d "libevent-${LIBEVNT_VERSION}-stable" || { ilogger 'err' "FAIL to decompress file ${libevent_zip} !"; exit 1; }
 
+        # libevent need libssl1.0-dev
         ilogger "Install libevent-${LIBEVNT_VERSION}-stable ."
+        sudo dpkg -s "libssl1.0-dev" >dev/null 2>&1 || sudo apt-get install -y libssl1.0-dev
         cd "libevent-${LIBEVNT_VERSION}-stable"
         ./configure --prefix="/opt/libevent-${LIBEVNT_VERSION}"
         test $? -eq 0 || { ilogger 'err' "FAIL to compile libevent-${LIBEVNT_VERSION} !"; exit 1; }
@@ -413,6 +461,7 @@ install_pgbouncer(){
         ilogger "Copy script file ${each_pgb_conf} to ${PGDBCONFDIR}/ ."
         sudo cp "${CONFDIR}/${each_pgb_conf}" "${PGDBCONFDIR}/${each_pgb_conf}"
         test $? -eq 0 || { ilogger "err" "FAIL to copy file ${CONFDIR}/${each_pgb_conf} !"; }
+        sudo chown -R postgres:postgres "${PGDBCONFDIR}"
     done<${pgb_confs}
 
 
@@ -432,7 +481,7 @@ install_repmgr(){
 
         pushd "${PKGDIR}"
         untar "${rpmzip}"
-        local rpmdir=$(ls -1d repmgr-* | grep -v "${rpmzip}")
+        local rpmdir=$(find "${PKGDIR}" -type d -name "repmgr-*" | awk -F'/' '{print $NF}')
         test -d "${rpmdir}" || { ilogger 'err' "FAIL to decompress repmgr source file to directory ${rpmdir} !"; exit 1; }
         cd "${rpmdir}"
         export PG_CONFIG="${PGHOME}/bin/pg_config"
@@ -468,6 +517,7 @@ install_repmgr(){
     test -f "${CONFDIR}/${repmgr_conf}" || { ilogger 'err' "Customized configuration file ${CONFDIR}/${repmgr_conf} not found!" ; exit 1; }
     sudo cp "${CONFDIR}/${repmgr_conf}" "${PGDBCONFDIR}/${repmgr_conf}"
     test $? -eq 0 && ilogger 'suc' "Put configuration file ${CONFDIR}/${repmgr_conf} to ${PGDBCONFDIR}/${repmgr_conf} ."
+    sudo chown -R postgres:postgres "${PGDBCONFDIR}"
 
     ilogger 'suc' "Finish task of installing repmgr."
 }

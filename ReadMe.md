@@ -1,5 +1,12 @@
 # 编译部署 PostgreSQL 环境
 
+注意:
+
+1. 只在 Ubuntu 18.04 上测试过。
+2. 安装 PostgreSQL 服务器前，先编辑 conf/passfile 设置密码。
+3. 安装 repmgr 前，先编辑 conf/repmgr.conf 中的 host 等信息。
+
+
 ## 目录树
 
 ```
@@ -27,3 +34,27 @@
 - libevent-2.0.22-stable.tar.gz
 - pgbouncer-1.9.0.tar.gz
 - repmgr-4.2.tar.gz
+
+
+## 日志文件管理
+
+用 logrotate 管理 repmgr 的日志文件，编辑 `/etc/logrotate.conf` 文件:
+
+```
+/var/log/pg_log/repmgr.log {
+    missingok
+    compress
+    rotate 52
+    maxsize 100M
+    weekly
+    create 0640 postgres dbadmin
+    postrotate
+        killall -HUP repmgrd
+    endscript
+}
+```
+
+用 crontab 清理 postgresql 的日志文件。
+```
+/usr/bin/find /path-to-postgresql-logs/ -type f -name "postgresql-*.log" -mtime +3 -delete ;
+```
