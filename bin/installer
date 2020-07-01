@@ -77,7 +77,7 @@ untar(){
 setup_system(){
     # Environment variables
     local exp_etc_profile="${CONFDIR}/etc_profile"
-    test -f "${CONFDIR}/etc_profile" || { ilogger "err" "Custome environment file ${CONFDIR}/etc_profile not found !"; exit 1; }
+    test -f "${exp_etc_profile}" || { ilogger "err" "Custome environment file ${exp_etc_profile} not found !"; exit 1; }
     while read var_item
     do
         var_item_head=$(echo ${var_item} | awk -F'=' '{print $1}')
@@ -107,13 +107,14 @@ setup_system(){
 
 
     ilogger "Edit /etc/security/limits.conf."
-    test -f "${CONFDIR}/limits.conf" || { ilogger "err" "Customize limit.conf file ${CONFDIR}/limits.conf not found !"; exit 1; }
+    local exp_limits_conf="${CONFDIR}/limits.conf"
+    test -f "${exp_limits_conf}" || { ilogger "err" "Customize limit.conf file ${exp_limits_conf} not found !"; exit 1; }
     if [ -f '/etc/security/limits.conf' -a ! -f '/etc/security/limits.conf.bak' ];
     then
         ilogger "Backup old /etc/security/limits.conf ."
         sudo cp '/etc/security/limits.conf' '/etc/security/limits.conf.bak'
     fi
-    cat "${CONFDIR}/limits.conf" | sudo tee /etc/security/limits.conf
+    cat "${exp_limits_conf}" | sudo tee /etc/security/limits.conf
     sudo sysctl -w fs.file-max=${V_FILE_MAX}
     sudo sysctl -w kernel.pid_max=${V_PID_MAX}
 
@@ -277,7 +278,7 @@ install_postgresql_server(){
         echo "${PGHOME}/lib" | sudo tee /etc/ld.so.conf.d/pgsql.conf
         sudo /sbin/ldconfig "${PGHOME}/lib"
 
-        ilogger "Create neccessary running directories."
+        ilogger "Create necessary running directories."
         test -d "${PGDBRUNDIR}" || { sudo mkdir -p "${PGDBRUNDIR}" && sudo chown -R postgres:postgres "${PGDBRUNDIR}" && ilogger 'suc' "Create directory ${PGDBRUNDIR}" ; }
         test -d "${PGDBLOGDIR}" || { sudo mkdir -p "${PGDBLOGDIR}" && sudo chown -R postgres:postgres "${PGDBLOGDIR}" && ilogger 'suc' "Create directory ${PGDBLOGDIR}" ; }
         test -d '/var/log/pg_log' || sudo ln -s "${PGDBLOGDIR}" '/var/log/pg_log'

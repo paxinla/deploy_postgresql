@@ -6,6 +6,7 @@
 2. 安装 PostgreSQL 服务器前，先编辑 conf/passfile 设置密码。
 3. 安装 repmgr 前，先编辑 conf/repmgr.conf 中的 host 等信息。
 
+在本目录下执行 `make` 即可。
 
 ## 目录树
 
