@@ -149,7 +149,7 @@ install_sys_packages(){
     local chk_pkg_exists='N'
     while read pkg_name
     do
-        sudo dpkg -s "${pkg_name}" >dev/null 2>&1 && chk_pkg_exists='Y'
+        sudo dpkg -s "${pkg_name}" >/dev/null 2>&1 && chk_pkg_exists='Y'
         if [ "${chk_pkg_exists}" = 'N' ];
         then
             ilogger "Install system package:  ${pkg_name} ."
@@ -183,13 +183,16 @@ install_python(){
         test $? -eq 0 || { ilogger "err" "FAIL to move pyenv to target location !"; exit 1; }
         sudo chown -R $USER:$USER "${PYENV_ROOT}"
 
-        echo "export PYENV_ROOT=\"${PYENV_ROOT}\"" >> ~/.bashrc
-        echo "export PATH=\"${PYENV_ROOT}/bin\":\$PATH" >> ~/.bashrc
-        echo "eval \"\$(pyenv init -)\"" >> ~/.bashrc
+        if [ "$(grep -c pyenv ~/.bashrc)" = '0' ];
+        then
+            echo "export PYENV_ROOT=\"${PYENV_ROOT}\"" >> ~/.bashrc
+            echo "export PATH=\"${PYENV_ROOT}/bin\":\"${PYENV_ROOT}/shims\":\$PATH" >> ~/.bashrc
+            echo "eval \"\$(pyenv init -)\"" >> ~/.bashrc
+        fi
         . ~/.bashrc
 
         export PYENV_ROOT="${PYENV_ROOT}"
-        export PATH="${PYENV_ROOT}/bin:$PATH"
+        export PATH="${PYENV_ROOT}/bin:\"${PYENV_ROOT}/shims\":$PATH"
         eval "$(pyenv init -)"
         /bin/bash "${PYENV_ROOT}/completions/pyenv.bash"
         test -d "${PYENV_ROOT}/cache" || sudo mkdir -p "${PYENV_ROOT}/cache"
@@ -203,7 +206,7 @@ install_python(){
     then
         ilogger "Install python2: version = ${version_py2} ."
         # py2 need libssl1.0-dev
-        sudo dpkg -s "libssl1.0-dev" >dev/null 2>&1 || sudo apt-get install -y libssl1.0-dev
+        sudo dpkg -s "libssl1.0-dev" >/dev/null 2>&1 || sudo apt-get install -y libssl1.0-dev
         test -f "${PKGDIR}/Python-${version_py2}.tar.xz" || { ilogger "err" "python2 package ${PKGDIR}/Python-${version_py2}.tar.xz not found !"; exit 1; }
         sudo cp "${PKGDIR}/Python-${version_py2}.tar.xz" "${PYENV_ROOT}/cache/"
         env PYTHON_CONFIGURE_OPTS="--enable-shared --enable-unicode=ucs4" "${PYENV_ROOT}/bin/pyenv" install "${version_py2}"
@@ -405,7 +408,7 @@ install_pgbouncer(){
 
         # libevent need libssl1.0-dev
         ilogger "Install libevent-${LIBEVNT_VERSION}-stable ."
-        sudo dpkg -s "libssl1.0-dev" >dev/null 2>&1 || sudo apt-get install -y libssl1.0-dev
+        sudo dpkg -s "libssl1.0-dev" >/dev/null 2>&1 || sudo apt-get install -y libssl1.0-dev
         cd "libevent-${LIBEVNT_VERSION}-stable"
         ./configure --prefix="/opt/libevent-${LIBEVNT_VERSION}"
         test $? -eq 0 || { ilogger 'err' "FAIL to compile libevent-${LIBEVNT_VERSION} !"; exit 1; }
