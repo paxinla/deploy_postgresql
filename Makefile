@@ -1,5 +1,7 @@
 INSTALLER = "bin/installer"
 
+all: depends inspy server inspgbouncer insrepmgr
+
 ## Shortcuts
 depends: deps
 
@@ -19,7 +21,7 @@ deps:
 	@$(INSTALLER) depends
 server: deps setupos
 	@$(INSTALLER) pgserver
-client: deps
+client: deps inspy
 	@$(INSTALLER) pgclient
 
 

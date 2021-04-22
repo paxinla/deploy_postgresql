@@ -149,7 +149,7 @@ install_sys_packages(){
     local chk_pkg_exists='N'
     while read pkg_name
     do
-        sudo dpkg -s "${pkg_name}" >/dev/null 2>&1 && chk_pkg_exists='Y'
+        sudo dpkg -s "${pkg_name}" >dev/null 2>&1 && chk_pkg_exists='Y'
         if [ "${chk_pkg_exists}" = 'N' ];
         then
             ilogger "Install system package:  ${pkg_name} ."
