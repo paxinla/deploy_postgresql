@@ -1,6 +1,6 @@
 INSTALLER = "bin/installer"
 
-all: depends inspy server inspgbouncer insrepmgr
+all: depends pyenv server inspgbouncer insrepmgr
 
 ## Shortcuts
 depends: deps
@@ -12,7 +12,7 @@ setupos:
 
 
 ## Python environment
-inspy:
+pyenv:
 	@$(INSTALLER) inspy
 
 
@@ -21,18 +21,20 @@ deps:
 	@$(INSTALLER) depends
 server: deps setupos
 	@$(INSTALLER) pgserver
-client: deps inspy
+client: deps pyenv
 	@$(INSTALLER) pgclient
 
 
 ## Pgbouncer
-inspgbouncer: deps
+pgbouncer: deps
 	@$(INSTALLER) inspgbouncer
 
 
 ## repmgr
-insrepmgr: deps
+repmgr: deps
 	@$(INSTALLER) insrepmgr
 
+## pgroonga
+pgroonga:
+	@$(INSTALLER) inspgroonga
 
-.PHONY: inspy server inspgbouncer insrepmgr

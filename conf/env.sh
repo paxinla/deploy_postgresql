@@ -43,3 +43,7 @@ PBHOME='/opt/pgbouncer'
 
 ## repmgr
 REPMGR_VERSION='4.2'
+
+## pgroonga
+PGROONGA_VERSION='2.2.9'
+

@@ -137,6 +137,20 @@ setup_system(){
 }
 
 
+install_sys_package(){
+    local pkg_name="$1"
+    local chk_pkg_exists='N'
+
+    sudo dpkg -s "${pkg_name}" >/dev/null 2>&1 && chk_pkg_exists='Y'
+    if [ "${chk_pkg_exists}" = 'N' ];
+    then
+        ilogger "Install system package:  ${pkg_name} ."
+        sudo apt-get install -y "${pkg_name}"
+        test $? -eq 0 || { ilogger "err" "ERROR occur while installing package: ${pkg_name} !!!"; sleep 5; }
+    fi
+}
+
+
 install_sys_packages(){ 
     local sys_pkgs_list="${CONFDIR}/${C_APT_LIST}"
     test -f "${sys_pkgs_list}" || { ilogger "err" "System package list ${sys_pkgs_list} not found !"; exit 1; }
@@ -146,17 +160,9 @@ install_sys_packages(){
     sudo apt-get update
     test $? -eq 0 || { ilogger "err" "ERROR occur while update system package information!"; exit 1; }
 
-    local chk_pkg_exists='N'
     while read pkg_name
     do
-        sudo dpkg -s "${pkg_name}" >dev/null 2>&1 && chk_pkg_exists='Y'
-        if [ "${chk_pkg_exists}" = 'N' ];
-        then
-            ilogger "Install system package:  ${pkg_name} ."
-            sudo apt-get install -y "${pkg_name}"
-            test $? -eq 0 || { ilogger "err" "ERROR occur while installing package: ${pkg_name} !!!"; sleep 5; }
-        fi
-        chk_pkg_exists='N'
+        install_sys_package "${pkg_name}"
     done<${sys_pkgs_list}
 
     ilogger 'suc' "Finish task of installing system packages."
@@ -527,6 +533,42 @@ install_repmgr(){
 }
 
 
+install_pgroonga(){
+    ilogger "Deploy PostgreSQL extension pgroonga , version = ${PGROONGA_VERSION} ."
+    local pgroonga_zip="${PKGDIR}/pgroonga-${PGROONGA_VERSION}.tar.gz"
+    test -f "${pgroonga_zip}" || { ilogger "err" "Expected source file ${pgroonga_zip} not found !"; exit 1; }
+
+    if [ -f "${PGHOME}/bin/pg_config" ];
+    then
+        pushd "${PKGDIR}"
+        test -d "pgroonga-${PGROONGA_VERSION}" && rm -rf "pgroonga-${PGROONGA_VERSION}"
+        untar "${pgroonga_zip}"
+        test -d "pgroonga-${PGROONGA_VERSION}" || { ilogger "err" "FAIL to decompress ${pgroonga_zip} !"; exit 1; }
+
+        ilogger "Install system packages for extension pgroonga-${PGROONGA_VERSION}"
+        install_sys_package "libgroonga-dev"
+        install_sys_package "libmsgpack-dev"
+
+        ilogger "Compile extension pgroonga-${PGROONGA_VERSION}"
+        cd "pgroonga-${PGROONGA_VERSION}"
+        local core_num=$(grep -c processor /proc/cpuinfo)
+        export PG_CONFIG="${PGHOME}/bin/pg_config"
+        export PATH="${PGHOME}/bin:$PATH"
+        sudo make HAVE_MSGPACK=1
+        test $? -eq 0 || { ilogger 'err' "FAIL to make pgroonga-${PGROONGA_VERSION} !"; exit 1; }
+        sudo make install
+        test $? -eq 0 || { ilogger 'err' "FAIL to make install pgroonga-${PGROONGA_VERSION} !"; exit 1; }
+        popd
+
+        ilogger 'suc' "Success to install PostgreSQL extension pgroonga."
+    else
+        ilogger "err" "You need to install PostgreSQL server before installing pgroonga !"; exit 1;
+    fi
+
+    ilogger 'suc' "Finish task of installing PostgreSQL extension pgroonga."
+}
+
+
 ## Process routine
 case "${ACTOPT}" in
     "usage") show_usage
@@ -544,6 +586,8 @@ case "${ACTOPT}" in
     "inspgbouncer") install_pgbouncer
                     ;;
     "insrepmgr") install_repmgr
+                 ;;
+    "inspgroonga") install_pgroonga
                  ;;
     "*") show_usage
          ;;

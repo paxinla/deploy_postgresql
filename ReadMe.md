@@ -41,23 +41,40 @@
 
 ## 日志文件管理
 
-用 logrotate 管理 repmgr 的日志文件，编辑 `/etc/logrotate.conf` 文件:
+用 logrotate 管理 repmgr 的日志文件，编辑 `/etc/logrotate.d/postgresql` 文件:
 
 ```
 /var/log/pg_log/repmgr.log {
-    missingok
-    compress
-    rotate 52
-    maxsize 100M
     weekly
-    create 0640 postgres dbadmin
+    rotate 10
+    maxsize 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 postgres postgres
     postrotate
         killall -HUP repmgrd
+    endscript
+}
+
+/var/log/pg_log/pgbouncer.log {
+    weekly
+    rotate 10
+    maxsize 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 postgres postgres
+    postrotate
+        kill -HUP `cat /var/log/pg_log/pgbouncer.pid 2>/dev/null` 2>/dev/null || true
     endscript
 }
 ```
 
 用 crontab 清理 postgresql 的日志文件。
+
 ```
 /usr/bin/find /path-to-postgresql-logs/ -type f -name "postgresql-*.log" -mtime +3 -delete ;
 ```
